@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Prop-firm challenge simulator</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#05070a;--panel:#0c1117;--line:#1c2530;--tx:#d8e2ec;--mut:#7d8c9b;--cy:#3ec6f0;--gr:#22c565;--rd:#f0524a;--grid:#17202a}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+@media (prefers-color-scheme:light){:root:not([data-theme="dark"]){--bg:#f3f6f9;--panel:#fff;--line:#d5dde6;--tx:#17212b;--mut:#5d6b79;--cy:#0b86b0;--gr:#12934a;--rd:#d63a32;--grid:#e3e9ef}}
+:root[data-theme="light"]{--bg:#f3f6f9;--panel:#fff;--line:#d5dde6;--tx:#17212b;--mut:#5d6b79;--cy:#0b86b0;--gr:#12934a;--rd:#d63a32;--grid:#e3e9ef}
+:root[data-theme="dark"]{--bg:#05070a;--panel:#0c1117;--line:#1c2530;--tx:#d8e2ec;--mut:#7d8c9b;--cy:#3ec6f0;--gr:#22c565;--rd:#f0524a;--grid:#17202a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.5 "Segoe UI",system-ui,sans-serif}
+main{max-width:980px;margin:0 auto;padding:20px 14px 40px}
+h1{font-size:1.5rem;margin:0 0 4px}h2{font-size:1.05rem;margin:28px 0 2px;color:var(--cy)}
+p.s{color:var(--mut);margin:0 0 12px;font-size:.9rem}
+.ctl{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px}
+label{display:flex;flex-direction:column;font-size:.78rem;color:var(--mut);gap:3px}
+input{background:var(--bg);color:var(--tx);border:1px solid var(--line);border-radius:5px;padding:7px;font:inherit;font-size:.95rem;width:100%}
+input:focus-visible,button:focus-visible{outline:2px solid var(--cy);outline-offset:1px}
+button{margin-top:14px;background:var(--cy);color:#001018;border:0;border-radius:6px;padding:10px 22px;font:inherit;font-weight:700;cursor:pointer}
+.box{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-top:10px;overflow:hidden}
+canvas{display:block;width:100%}
+.kpi{position:absolute;top:8px;right:8px;background:color-mix(in srgb,var(--bg) 85%,transparent);border:1px solid var(--line);border-radius:6px;padding:6px 10px;font:12px/1.5 ui-monospace,Consolas,monospace;text-align:right}
+.big{font-size:1.5rem;font-weight:700}
+.g{color:var(--gr)}.r{color:var(--rd)}
+.note{color:var(--mut);font-size:.8rem;margin-top:26px}
+</style></head><body><main>
+<h1>Prop-firm challenge simulator</h1>
+<p class="s">Plug in your strategy's rough stats. See how many challenge attempts pass or bust, then how a 5-year multi-account operation pays out.</p>
+<div class="ctl" id="ctl"></div>
+<button id="run">Run simulation</button>
+
+<h2>Part 1: Challenge attempts</h2>
+<p class="s" id="s1"></p>
+<div class="box"><canvas id="c1"></canvas><div class="kpi" id="k1"></div></div>
+
+<h2>Part 2: Five-year campaigns</h2>
+<p class="s" id="s2"></p>
+<div class="box"><canvas id="c2"></canvas></div>
+<div class="box"><canvas id="c3"></canvas><div class="kpi" id="k3"></div></div>
+<p class="note">Simulated with a simple random-trade model, not your real strategy. Not financial advice. Real results depend on slippage, rule changes and an edge that may not persist.</p>
+</main>
+<script>
+const F=[
+["p","Win rate %",50],["rr","Reward : risk",1.3],["n","Trades per day",1],["cl","Loss clustering (0-3)",1],
+["size","Account size $",100000],["tgt","Profit target $",6000],["dd","Trailing drawdown $",3000],["stop","Daily stop $",800],
+["re","Eval risk %",0.4],["rf","Funded risk %",0.2],["fee","Account fee $",165],["split","Payout split %",90],
+["buy","Accounts bought / month",2],["max","Max live accounts",5],["ch","Challenge paths",500],["ca","5-year campaigns",3000]];
+const P={};
+ctl.innerHTML=F.map(f=>`<label>${f[1]}<input id="${f[0]}" type="number" step="any" value="${f[2]}"></label>`).join("");
+const $=id=>document.getElementById(id), css=v=>getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const rd=()=>{F.forEach(f=>P[f[0]]=Math.max(0,+$(f[0]).value||0))};
+const fm=v=>(v<0?"-":"")+"$"+(Math.abs(v)>=1e3?(Math.abs(v)/1e3).toFixed(Math.abs(v)>=1e5?0:1)+"K":Math.round(Math.abs(v)));
+
+// shared market day: returns R units for the day
+function day(st){
+  const pe=Math.max(0.02,P.p/100-P.cl*0.05*Math.min(st.s,3));let r=0;
+  for(let i=0;i<P.n;i++)r+=Math.random()<pe?P.rr:-1;
+  st.s=r<0?st.s+1:0;return r;
+}
+const pnl=(r,pct)=>Math.max(-P.stop,r*pct/100*P.size);
+// account update; returns 1 pass, -1 bust, 0 ongoing
+function step(a,d){
+  a.b+=d;if(a.b>a.pk)a.pk=a.b;
+  const fl=Math.min(a.pk-P.dd,0);
+  if(a.b<=fl)return -1;
+  return 0;
+}
+
+function challenge(){
+  const st={s:0},a={b:0,pk:0},path=[0];let out=0;
+  for(let t=0;t<90&&!out;t++){
+    const d=pnl(day(st),P.re);
+    if(step(a,d)<0)out=-1;
+    path.push(a.b);
+    if(!out&&a.b>=P.tgt){out=1;path[path.length-1]=P.tgt}
+  }
+  return{path,out};
+}
+
+function setup(c,h){const w=c.parentElement.clientWidth,d=devicePixelRatio||1;c.width=w*d;c.height=h*d;c.style.height=h+"px";const x=c.getContext("2d");x.scale(d,d);x.clearRect(0,0,w,h);return[x,w,h]}
+function axes(x,w,h,L,B,xmin,xmax,ymin,ymax,xt,yt,fx,fy){
+  x.font="11px ui-monospace,Consolas,monospace";x.fillStyle=css("--mut");x.strokeStyle=css("--grid");x.lineWidth=1;
+  const X=v=>L+(v-xmin)/(xmax-xmin)*(w-L-8),Y=v=>h-B-(v-ymin)/(ymax-ymin)*(h-B-10);
+  xt.forEach(v=>{x.beginPath();x.moveTo(X(v),10);x.lineTo(X(v),h-B);x.stroke();x.textAlign="center";x.fillText(fx(v),X(v),h-B+14)});
+  yt.forEach(v=>{x.beginPath();x.moveTo(L,Y(v));x.lineTo(w-8,Y(v));x.stroke();x.textAlign="right";x.fillText(fy(v),L-5,Y(v)+4)});
+  return[X,Y];
+}
+const tick=(a,b,n)=>{const s=(b-a)/n,o=[];for(let i=0;i<=n;i++)o.push(a+s*i);return o};
+
+function part1(){
+  const N=Math.round(P.ch),runs=[];let pass=0,bust=0,days=0;
+  for(let i=0;i<N;i++){const r=challenge();runs.push(r);if(r.out>0){pass++;days+=r.path.length-1}else bust++}
+  const pr=pass/N,eval_=P.fee;
+  const evAcct=pr*0.0; // placeholder removed below
+  $("s1").textContent=`${N} challenge attempts: reach +${fm(P.tgt)} to pass, touch the ${fm(P.dd)} trailing drawdown and you bust. Risk ${P.re}% per trade, ${fm(P.stop)} daily stop.`;
+  const [x,w,h]=setup($("c1"),360);
+  const ymax=P.tgt*1.15,ymin=-P.dd*1.25,xm=60;
+  const [X,Y]=axes(x,w,h,52,22,0,xm,ymin,ymax,tick(0,xm,6),tick(-P.dd,P.tgt,4).map(v=>Math.round(v/500)*500),v=>Math.round(v),v=>(v>=0?"+":"")+fm(v));
+  x.fillStyle="rgba(34,197,101,.08)";x.fillRect(52,Y(ymax),w-60,Y(P.tgt)-Y(ymax));
+  x.fillStyle="rgba(240,82,74,.08)";x.fillRect(52,Y(-P.dd),w-60,Y(ymin)-Y(-P.dd));
+  x.lineWidth=1;
+  runs.forEach(r=>{
+    x.strokeStyle=r.out>0?"rgba(34,197,101,.28)":r.out<0?"rgba(240,82,74,.28)":"rgba(125,140,155,.2)";
+    x.beginPath();r.path.forEach((v,i)=>{const px=X(Math.min(i,xm)),py=Y(Math.max(ymin,Math.min(ymax,v)));i?x.lineTo(px,py):x.moveTo(px,py)});x.stroke();
+  });
+  x.setLineDash([5,4]);x.lineWidth=1.5;
+  x.strokeStyle=css("--gr");x.beginPath();x.moveTo(52,Y(P.tgt));x.lineTo(w-8,Y(P.tgt));x.stroke();
+  x.strokeStyle=css("--rd");x.beginPath();x.moveTo(52,Y(-P.dd));x.lineTo(w-8,Y(-P.dd));x.stroke();x.setLineDash([]);
+  const ev=pr*P.size*0+ (pass? (pr*0):0);
+  $("k1").innerHTML=`<div class="big ${pr>=.5?"g":"r"}">Pass ${Math.round(pr*100)}%</div>pass ${pass} &nbsp; bust ${bust}<br>avg ${pass?Math.round(days/pass):0} days to pass`;
+}
+
+function campaign(){
+  const N=Math.round(P.ca),M=60,D=21,fin=new Float32Array(N),paths=[];
+  for(let s=0;s<N;s++){
+    const st={s:0},slots=[],cum=new Float32Array(M+1);let cash=0;
+    for(let i=0;i<P.max;i++)slots.push({m:0,b:0,pk:0});
+    for(let m=0;m<M;m++){
+      let bought=0;
+      for(const a of slots)if(a.m===0&&bought<P.buy){a.m=1;a.b=0;a.pk=0;bought++;cash-=P.fee}
+      for(let d=0;d<D;d++){
+        const r=day(st);
+        for(const a of slots){
+          if(!a.m)continue;
+          const v=step(a,pnl(r,a.m===1?P.re:P.rf));
+          if(v<0){a.m=0;continue}
+          if(a.m===1&&a.b>=P.tgt){a.m=2;a.b=0;a.pk=0}
+        }
+      }
+      for(const a of slots)if(a.m===2&&a.b>0){cash+=a.b*P.split/100;a.b=0;a.pk=0}
+      cum[m+1]=cash;
+    }
+    fin[s]=cash;paths.push(cum);
+  }
+  const sorted=Array.from(fin).sort((a,b)=>a-b),med=sorted[N>>1],mean=sorted.reduce((a,b)=>a+b,0)/N;
+  const green=sorted.filter(v=>v>0).length/N,hi=sorted[Math.floor(N*.985)],lo=Math.min(-5000,sorted[0]);
+  $("s2").textContent=`Buy ${P.buy} fresh $${P.size/1000}K accounts a month, at most ${P.max} live. Pass at ${P.re}% risk, then trade funded at ${P.rf}%. ${N} five-year runs; take-home is payouts minus fees.`;
+  // cloud
+  let [x,w,h]=setup($("c2"),340);
+  const [X,Y]=axes(x,w,h,56,22,0,M,lo,hi,[0,12,24,36,48,60],tick(0,hi,5).map(v=>Math.round(v/1e4)*1e4),v=>v?"Yr "+v/12:"0",v=>(v>=0?"+":"")+fm(v));
+  x.globalCompositeOperation="lighter";x.lineWidth=1;x.strokeStyle="rgba(20,140,70,.07)";
+  paths.forEach(p=>{x.beginPath();for(let i=0;i<=M;i++){const py=Y(Math.min(hi,Math.max(lo,p[i])));i?x.lineTo(X(i),py):x.moveTo(X(i),py)}x.stroke()});
+  x.globalCompositeOperation="source-over";
+  const mi=fin.indexOf(med)>=0?fin.indexOf(med):0,mp=paths[mi];
+  x.strokeStyle="#fff";x.lineWidth=2.2;x.beginPath();for(let i=0;i<=M;i++){const py=Y(Math.min(hi,mp[i]));i?x.lineTo(X(i),py):x.moveTo(X(i),py)}x.stroke();
+  // histogram
+  [x,w,h]=setup($("c3"),280);
+  const B=60,bw=(hi-lo)/B,cnt=new Array(B).fill(0);
+  fin.forEach(v=>{const k=Math.floor((Math.min(v,hi-1)-lo)/bw);cnt[Math.max(0,k)]++});
+  const mx=Math.max(...cnt),L=14,W=w-L-8,HX=v=>L+(v-lo)/(hi-lo)*W;
+  cnt.forEach((c,i)=>{const v=lo+i*bw;x.fillStyle=v+bw<=0?css("--rd"):css("--gr");const bh=c/mx*(h-50);x.fillRect(L+i*W/B,h-30-bh,W/B-1,bh)});
+  x.font="11px ui-monospace,Consolas,monospace";x.fillStyle=css("--mut");x.textAlign="center";
+  tick(0,hi,5).forEach(v=>{v=Math.round(v/1e4)*1e4;x.fillText("+"+fm(v),Math.max(24,HX(v)),h-10)});
+  x.lineWidth=1.5;x.strokeStyle="#fff";x.setLineDash([5,4]);x.beginPath();x.moveTo(HX(med),8);x.lineTo(HX(med),h-30);x.stroke();
+  x.strokeStyle="#e8b84a";x.setLineDash([2,3]);x.beginPath();x.moveTo(HX(mean),8);x.lineTo(HX(mean),h-30);x.stroke();x.setLineDash([]);
+  $("k3").innerHTML=`median ${fm(med)}<br>mean ${fm(mean)}<br>= ${fm(mean/5)}/yr<br><span class="${green>.9?"g":"r"}">green ${Math.round(green*100)}%</span><br>sims ${N}`;
+}
+
+$("run").onclick=()=>{
+  rd();$("run").textContent="Running...";
+  requestAnimationFrame(()=>setTimeout(()=>{part1();campaign();$("run").textContent="Run simulation"},20));
+};
+addEventListener("resize",()=>{if(P.p!==undefined)$("run").click()});
+$("run").click();
+</script></body></html>
